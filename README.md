@@ -95,7 +95,8 @@
 │   ├── samples/             # 可上传的 layers.json / press.csv / oven.csv
 │   ├── tests/               # pytest 用例
 │   ├── requirements.txt
-│   └── Dockerfile
+│   ├── Dockerfile           # 运行镜像
+│   └── Dockerfile.verify    # 验收镜像（预装 pytest/httpx，内置 tests）
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx          # 编排台主界面
@@ -104,8 +105,11 @@
 │   │   │   └── FixPanel.tsx # 固定图层位置
 │   │   └── lib/             # 类型、API、本地解析、时间轴几何（含单测）
 │   ├── Dockerfile + nginx.conf
-├── docker-compose.yml
-├── verify.sh                # 一次性验收
+│   └── Dockerfile.verify    # 验收镜像（Node 跑 tsc/vitest/vite build）
+├── verify/
+│   └── verify_e2e.py        # compose verify 服务内的端到端冒烟
+├── docker-compose.yml       # 含运行服务与 profile=verify 的验收服务
+├── verify.sh                # 本机（非 Docker）一次性验收
 └── README.md
 ```
 
@@ -210,21 +214,30 @@ API_PORT=19000 WEB_PORT=19080 ./verify.sh
 
 ### 8.2 按交付约定运行 Compose 的 verify 服务
 
-`docker-compose.verify.yml` 定义了一次性 `verify` 服务：它构建 API 与前端校验
-镜像，在容器内跑后端 pytest、前端 tsc/vitest/vite 构建，并启动 API 执行
-`verify/verify_e2e.py` 端到端冒烟，全部通过退出码 0：
+`verify` 服务就定义在主编排文件 `docker-compose.yml` 中，用 `verify` profile 隔离
+（普通 `docker compose up` 不会启动它）。一键完成：构建校验镜像 → 前端
+tsc/vitest/vite 构建（`web-verify`，须成功退出）→ 后端 pytest → 容器内启动 API →
+纯 Python（**不依赖 curl**）等待健康 → 执行 `verify/verify_e2e.py` 端到端冒烟：
 
 ```bash
-docker compose -f docker-compose.verify.yml up \
-  --build --abort-on-container-exit verify
-docker compose -f docker-compose.verify.yml down --rmi local
+docker compose --profile verify up --build --abort-on-container-exit verify
+# 结束后清理
+docker compose --profile verify down --rmi local
 ```
 
-单端校验：
+退出码 0 即全部验收通过；前端/后端任一测试失败，依赖的
+`service_completed_successfully` 条件会阻止 verify 启动或直接失败。
+
+单独跑某一端校验：
 
 ```bash
-docker compose -f docker-compose.verify.yml run --rm verify-web   # 前端 tsc/vitest/build
+docker compose --profile verify run --rm web-verify        # 前端 tsc/vitest/build
+docker compose --profile verify run --rm api-verify-base   # 后端 pytest
 ```
+
+> 说明：`web-verify` 用 `frontend/Dockerfile.verify`（Node + 完整源码）；`verify`
+> 用 `backend/Dockerfile.verify`（已预装 pytest/httpx 并内置 tests，无需运行时联网
+> 装包），健康等待与冒烟全部用 Python 标准库 urllib 完成，精简镜像中无需 curl。
 
 ### 8.3 验收场景
 

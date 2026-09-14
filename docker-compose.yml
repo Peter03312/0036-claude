@@ -1,12 +1,20 @@
-# 丝网套印编排台 —— 一键启动两端。
-# 宿主端口可用环境变量覆盖：WEB_PORT（前端）、API_PORT（后端）。
+# 丝网套印编排台 —— 编排定义。
+#
+# 正常启动两端（默认 Web 8080 / API 8000）：
+#   docker compose up --build
 #   WEB_PORT=9090 API_PORT=9000 docker compose up --build
+#
+# 一键交付验收（按约定的 verify 服务，不启动长期运行的容器）：
+#   docker compose --profile verify up --build --abort-on-container-exit verify
+#
+# verify 服务在容器内跑后端 pytest、等前端校验服务（tsc/vitest/vite build）
+# 成功完成，再起 API 做五类场景 + 多窗口 + 采纳拦截的端到端 HTTP 冒烟。
+# 健康等待用 Python urllib 实现，不依赖镜像内的 curl。
 services:
   api:
     build: ./backend
     container_name: trapping-api
     ports:
-      # 直接暴露后端，便于健康检查与 API 调用。
       - "${API_PORT:-8000}:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health').status==200 else 1)"]
@@ -22,3 +30,61 @@ services:
         condition: service_healthy
     ports:
       - "${WEB_PORT:-8080}:80"
+
+  # —— 以下仅在 --profile verify 时参与，正常 up 不启动 ——
+
+  # 后端校验镜像（预装 pytest/httpx 并带 tests），供 verify 使用。
+  api-verify-base:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.verify
+    image: trapping-api:verify
+    profiles: [verify]
+    command: ["python", "-c", "print('api verify image ready')"]
+
+  # 前端校验：容器内跑 tsc 类型检查、vitest 单测与 vite 生产构建。
+  web-verify:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.verify
+    image: trapping-web:verify
+    profiles: [verify]
+    command: ["sh", "-lc", "npm run test && npm run build && echo web-verify-ok"]
+
+  # 主验收：后端 pytest + 起 API + 端到端 HTTP 冒烟。
+  verify:
+    image: trapping-api:verify
+    profiles: [verify]
+    working_dir: /app
+    depends_on:
+      api-verify-base:
+        condition: service_completed_successfully
+      web-verify:
+        condition: service_completed_successfully
+    entrypoint: ["sh", "-lc"]
+    command:
+      - |
+        set -e
+        echo "==> [1/3] 后端单元与接口测试"
+        cd /app && python -m pytest -q
+
+        echo "==> [2/3] 启动后端服务（容器内）"
+        uvicorn app.main:app --host 127.0.0.1 --port 8000 &
+        API_PID=$$!
+        python - <<'PYWAIT'
+        import time, urllib.request, sys
+        for _ in range(80):
+            try:
+                if urllib.request.urlopen("http://127.0.0.1:8000/api/health", timeout=1).status == 200:
+                    print("    health OK"); sys.exit(0)
+            except Exception:
+                time.sleep(0.3)
+        print("API 未就绪"); sys.exit(1)
+        PYWAIT
+
+        echo "==> [3/3] 端到端接口冒烟"
+        python /workspace/verify/verify_e2e.py
+        kill $$API_PID 2>/dev/null || true
+        echo "✅ compose verify 全部通过"
+    volumes:
+      - ./verify:/workspace/verify:ro

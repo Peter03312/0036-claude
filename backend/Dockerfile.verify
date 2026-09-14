@@ -1,0 +1,16 @@
+# 一次性验收镜像：在生产依赖基础上预装 pytest/httpx，并带测试源码。
+# 仅供 compose 的 verify 服务使用；正常运行镜像用 Dockerfile。
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt pytest httpx
+
+COPY app ./app
+COPY tests ./tests
+
+CMD ["python", "-m", "pytest", "-q"]
