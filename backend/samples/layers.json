@@ -1,0 +1,35 @@
+[
+  {
+    "id": 1,
+    "duration": 3,
+    "predecessors": [],
+    "wet_group": null,
+    "flash": true,
+    "flash_duration": 3,
+    "window_successor": 3,
+    "wait_min": 0,
+    "wait_max": 1
+  },
+  {
+    "id": 2,
+    "duration": 9,
+    "predecessors": [],
+    "wet_group": null,
+    "flash": true,
+    "flash_duration": 3,
+    "window_successor": null,
+    "wait_min": 0,
+    "wait_max": 0
+  },
+  {
+    "id": 3,
+    "duration": 3,
+    "predecessors": [1, 2],
+    "wet_group": null,
+    "flash": false,
+    "flash_duration": 0,
+    "window_successor": null,
+    "wait_min": 0,
+    "wait_max": 0
+  }
+]

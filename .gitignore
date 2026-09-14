@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+backend/.verify-venv/
+.pytest_cache/
+
+# Node / 前端
+node_modules/
+dist/
+.vite/
+*.local
+
+# 验收临时产物
+.verify-api.log
+.verify-web.log
+
+# 系统/编辑器
+.DS_Store
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,24 @@
+# 丝网套印编排台 —— 一键启动两端。
+# 宿主端口可用环境变量覆盖：WEB_PORT（前端）、API_PORT（后端）。
+#   WEB_PORT=9090 API_PORT=9000 docker compose up --build
+services:
+  api:
+    build: ./backend
+    container_name: trapping-api
+    ports:
+      # 直接暴露后端，便于健康检查与 API 调用。
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health').status==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build: ./frontend
+    container_name: trapping-web
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-8080}:80"

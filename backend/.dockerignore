@@ -1,0 +1,6 @@
+# 构建上下文不需要的文件
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+tests/
