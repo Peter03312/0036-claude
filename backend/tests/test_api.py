@@ -129,6 +129,77 @@ def test_adopt_snapshot_roundtrip(client):
     assert again["makespan"] == snap["solution"]["makespan"]
 
 
+def test_adopt_rejects_invalid_input(client):
+    """非法工艺输入（非闪干层设窗口后继）不能被采纳冻结。"""
+    payload = {
+        "layers": [
+            {"id": 1, "duration": 2, "window_successor": 2},
+            {"id": 2, "duration": 2, "predecessors": [1]},
+        ],
+        "press_windows": [{"start": 0, "end": 20}],
+        "oven_windows": [{"start": 0, "end": 20}],
+    }
+    r = client.post("/api/adopt", json={"input": payload, "fix_positions": []})
+    assert r.status_code == 409
+    body = r.json()
+    assert body["feasible"] is False
+    assert body["conflicts"][0]["type"] == "WINDOW_ON_NON_FLASH"
+
+
+def test_adopt_rejects_infeasible(client):
+    """无可行解的输入不能被采纳。"""
+    r = client.post(
+        "/api/adopt",
+        json={"input": samples.infeasible_window_sample(), "fix_positions": []},
+    )
+    assert r.status_code == 409
+    assert r.json()["feasible"] is False
+    assert r.json()["conflicts"]
+
+
+def test_multiple_windows_with_common_time(client):
+    """一个后继同时受两个合法窗口约束、有共同时间时正常排程。"""
+    payload = {
+        "layers": [
+            {"id": 1, "duration": 2, "flash": True, "flash_duration": 2,
+             "window_successor": 3, "wait_min": 0, "wait_max": 6},
+            {"id": 2, "duration": 2, "flash": True, "flash_duration": 2,
+             "window_successor": 3, "wait_min": 0, "wait_max": 6},
+            {"id": 3, "duration": 2, "predecessors": [1, 2]},
+        ],
+        "press_windows": [{"start": 0, "end": 40}],
+        "oven_windows": [{"start": 0, "end": 40}],
+    }
+    r = client.post("/api/schedule", json={"input": payload, "fix_positions": []})
+    data = r.json()
+    assert data["feasible"] is True
+    t = data["timings"]
+    ps3 = t["3"]["press_start"]
+    for f in ("1", "2"):
+        wait = ps3 - t[f]["flash_end"]
+        assert 0 - 1e-9 <= wait <= 6 + 1e-9
+
+
+def test_multiple_windows_disjoint_rejected(client):
+    """同一后继的两个窗口无共同时间时报无解并指出涉及图层。"""
+    payload = {
+        "layers": [
+            {"id": 1, "duration": 2, "flash": True, "flash_duration": 2,
+             "window_successor": 3, "wait_min": 0, "wait_max": 0},
+            {"id": 2, "duration": 10, "flash": True, "flash_duration": 2,
+             "window_successor": 3, "wait_min": 0, "wait_max": 0},
+            {"id": 3, "duration": 2, "predecessors": [1, 2]},
+        ],
+        "press_windows": [{"start": 0, "end": 60}],
+        "oven_windows": [{"start": 0, "end": 60}],
+    }
+    r = client.post("/api/schedule", json={"input": payload, "fix_positions": []})
+    data = r.json()
+    assert data["feasible"] is False
+    involved = {lid for c in data["conflicts"] for lid in c["layers"]}
+    assert {1, 2} & involved
+
+
 def test_upload_endpoint(client, tmp_path):
     import json
     payload = samples.greedy_miss_sample()

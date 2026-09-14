@@ -67,7 +67,7 @@ echo "    static index OK"
 
 echo "==> [5/5] 端到端接口冒烟（四类验收场景 + 快照）"
 python3 - "$API_BASE" "$ROOT/backend/samples/layers.json" <<'PY'
-import json, sys, urllib.request, os
+import json, sys, urllib.request, urllib.error, os
 
 base = sys.argv[1]
 samples_path = sys.argv[2]
@@ -164,6 +164,44 @@ assert snap["version"] == 1 and snap["solution"]["print_sequence"] == [2, 1, 3]
 again = post("/api/schedule", snap["request"])
 assert again["print_sequence"] == snap["solution"]["print_sequence"]
 print("    采纳快照/原样重开 OK，adopted_at =", snap["adopted_at"])
+
+# 一个后继同时受两个合法复涂窗口约束、且有共同可用时间 -> 正常排程
+multi = {"input": {
+    "layers": [
+        {"id": 1, "duration": 2, "flash": True, "flash_duration": 2,
+         "window_successor": 3, "wait_min": 0, "wait_max": 6},
+        {"id": 2, "duration": 2, "flash": True, "flash_duration": 2,
+         "window_successor": 3, "wait_min": 0, "wait_max": 6},
+        {"id": 3, "duration": 2, "predecessors": [1, 2]},
+    ],
+    "press_windows": [{"start": 0, "end": 40}],
+    "oven_windows": [{"start": 0, "end": 40}],
+}, "fix_positions": []}
+mc = post("/api/schedule", multi)
+assert mc["feasible"] is True, mc
+print("    两个合法窗口有共同时间排程 OK")
+
+# 非法工艺输入不能被采纳（非闪干层设窗口后继 -> 409 + 冲突）
+bad_adopt_req = urllib.request.Request(
+    base + "/api/adopt",
+    data=json.dumps({"input": {
+        "layers": [
+            {"id": 1, "duration": 2, "window_successor": 2},
+            {"id": 2, "duration": 2, "predecessors": [1]},
+        ],
+        "press_windows": [{"start": 0, "end": 20}],
+        "oven_windows": [{"start": 0, "end": 20}],
+    }, "fix_positions": []}).encode(),
+    headers={"Content-Type": "application/json"},
+)
+try:
+    urllib.request.urlopen(bad_adopt_req)
+    raise AssertionError("非法工艺输入不应被采纳")
+except urllib.error.HTTPError as e:
+    body = json.load(e)
+    assert e.code == 409 and body["feasible"] is False, body
+    assert body["conflicts"][0]["type"] == "WINDOW_ON_NON_FLASH", body
+    print("    非法工艺输入采纳被拒 OK（409 +", body["conflicts"][0]["type"], "）")
 PY
 
 echo ""

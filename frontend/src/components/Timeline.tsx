@@ -117,6 +117,7 @@ export function Timeline({ input, solution, width = 1080 }: Props) {
             {solution.print_sequence.map((id, k) => {
               const t = solution.timings[String(id)];
               const layer = layersById.get(id);
+              if (!t) return null;
               return (
                 <div
                   key={`p${id}`}

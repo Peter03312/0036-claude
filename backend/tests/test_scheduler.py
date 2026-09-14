@@ -70,9 +70,9 @@ def test_flash_starts_no_earlier_than_print_end():
     assert t.flash_start == 3
 
 
-def test_flash_can_be_delayed_on_oven():
-    # 有窗口后继时，闪干可在烘台上延后以压到最小等待；闪干开始允许晚于
-    # 刮印结束（只要求不早于）。
+def test_flash_not_delayed_without_reason():
+    # 无窗口压力时闪干不无故拖晚：即使 makespan 上限允许更晚，字典序规则让
+    # 闪干取最早可行时刻（与印台刮印并行）。
     inp = mk([
         L(id=1, duration=4, flash=True, flash_duration=6),
         L(id=2, duration=5, predecessors=[1]),
@@ -80,10 +80,23 @@ def test_flash_can_be_delayed_on_oven():
     ])
     sol = search(inp, [])
     t = sol.timings[1]
-    assert t.flash_start >= t.press_end
-    # 与印台刮印并行：闪干区间与刮印 2 时间重叠。
-    assert t.flash_start < sol.timings[2].press_end
-    assert sol.timings[2].press_start < t.flash_end
+    assert t.flash_start == t.press_end == 4
+    # 闪干 [4,10) 与刮印 2 [4,9) 在两设备上并行。
+    assert t.flash_start < sol.timings[2].press_end <= t.flash_end
+
+
+def test_flash_delayed_only_to_minimize_wait():
+    # 有窗口时闪干才允许延后以把等待压到最小：此例延后到 4 可得等待 0。
+    inp = mk([
+        L(id=1, duration=4),
+        L(id=2, duration=3, flash=True, flash_duration=4,
+          window_successor=3, wait_min=0, wait_max=2),
+        L(id=3, duration=1),
+    ], pw=((0, 6), (8, 16)), ow=((0, 11), (13, 21)))
+    sol = search(inp, [])
+    assert sol is not None
+    assert round(sol.window_wait_sum, 9) == 0
+    assert sol.timings[2].flash_start == 4
 
 
 def test_recoat_window_closed_interval():

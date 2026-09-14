@@ -357,8 +357,8 @@ def _solve_order(prep: _Prepared, pi, sigma, relax_windows: bool, relax_wet: boo
         makespan_T = max(makespan_T, d[FS(fi)] + layers[fi].flash_duration)
 
     # 第二阶段：刮印固定为最早时刻，在 fs+fd ≤ T* 下把各闪干排到分量最晚，
-    # 同时最小化窗口等待总和（等待随各 fs 单调下降）。
-    opt = _optimize_flashes(prep, sigma, d, makespan_T, relax_windows)
+    # 第二阶段：先最小化窗口等待和，再让按 pi 排列的闪干起点序列字典序最小。
+    opt = _optimize_flashes(prep, sigma, pi, d, makespan_T, relax_windows)
     if opt is None:
         return None
     fs, waitsum = opt
@@ -371,40 +371,32 @@ def _solve_order(prep: _Prepared, pi, sigma, relax_windows: bool, relax_wet: boo
 
 
 def _latest_fit(windows, starts, ub: float, lb: float, dur: float):
-    """找起点 ≤ ub、≥ lb，且 [t, t+dur) 完全落入某时段的最晚 t；无则 None。
+    """找起点满足 lb ≤ t ≤ ub、且 [t, t+dur) 完整落入某时段的最晚 t；无则 None。
 
-    窗口互不重叠且按起点排序。注意 ub 是**起点**上界（makespan 等结束约束已
-    由调用方换算为 t ≤ 结束 − dur）。
+    窗口互不重叠且按起点排序。ub 是**起点**上界（结束上界已由调用方换算）。
     """
-    # 起点上界取 ub 与"可在 end 前放下"的交集：只看 start ≤ ub 的时段。
+    # 只看 start ≤ ub 的时段，从最晚时段向前找；同段内最晚点为 min(ub, end-dur)。
     i = bisect.bisect_right(starts, ub + EPS)
     for j in range(i - 1, -1, -1):
         start, end = windows[j]
         if end - start + EPS < dur:
             continue
         t = min(ub, end - dur)
-        if t + EPS >= start and t >= lb - EPS:
-            return t  # 从晚时段向早时段，第一个可行即全局最晚。
+        if t + EPS >= start and t >= lb - EPS and t <= ub + EPS:
+            return t
     return None
 
 
-def _optimize_flashes(prep, sigma, earliest_d, makespan_T, relax_windows):
-    """第二阶段：刮印固定为最早时刻，在 fs+fd ≤ T* 下求各闪干分量最晚时刻。
+def _flash_bounds(prep, sigma, earliest_d, makespan_T, relax_windows):
+    """各闪干在固定刮印时刻下的静态上下界。
 
-    每个窗口等待 ps_s − (fs_f+fd_f) 都随 fs_f 增大而减小；在烘台固定序 σ 下，
-    从最后一个闪干向前以 fs_{σk} ≤ fs_{σk+1} − fd 传播上界，并把每个闪干锚到
-    其 hi 内最晚的可用时段起点，迭代到不动点，即得分量最大（等待和最小）的解。
-    返回 (fs, waitsum) 或 None。
+    下界 lo：不早于本层刮印结束。
+    上界 hi：闪干结束不超过最小 makespan；窗口闪干还要保证后继等待 ≥ wait_min。
+    一个后继可能同时是多个闪干层的窗口后继（多窗口），此时后继起点必须落在
+    所有窗口的交集，下界取最严（max）、上界也取各窗口最严（min）。
     """
     layers = prep.layers
-    nf = len(sigma)
-    if nf == 0:
-        return {}, 0.0
-
     PS = lambda i: 2 * i
-
-    # 下界：闪干不早于本层刮印结束。上界：不超过最小 makespan、窗口最小等待、
-    # 后续同烘台闪干占位。
     lo = {fi: earliest_d[PS(fi)] + layers[fi].duration for fi in sigma}
     hi = {fi: makespan_T - layers[fi].flash_duration for fi in sigma}
     if not relax_windows:
@@ -413,76 +405,208 @@ def _optimize_flashes(prep, sigma, earliest_d, makespan_T, relax_windows):
                 hi[f],
                 earliest_d[PS(s)] - layers[f].flash_duration - layers[f].wait_min,
             )
+    return lo, hi
 
-    if any(hi[fi] + EPS < lo[fi] for fi in sigma):
+
+def _flash_latest_feasible(prep, sigma, lo, hi, fixed, relax_windows, earliest_d):
+    """固定部分闪干后，求可达到"窗口等待和最大"的完整闪干排法。
+
+    fixed：{闪干下标: 已锁定起点}。未锁定者按烘台次序 sigma 反复传播上下界，
+    再从后向前锚到烘台时段内的最晚起点，直到不动点。每个窗口等待
+    ps_s-(fs_f+fd_f) 对 fs_f 的系数为 +1，故把未锁定闪干排到分量最晚即最大化
+    可达等待和（用于检验在固定若干起点后能否仍达到 W*）。
+    返回 (fs, waitsum)；不可行返回 None。
+    """
+    layers = prep.layers
+    nf = len(sigma)
+    PS = lambda i: 2 * i
+    fd = {f: layers[f].flash_duration for f in sigma}
+
+    lo_cur = {f: max(lo[f], fixed.get(f, -INF)) for f in sigma}
+    hi_cur = {f: min(hi[f], fixed[f] if f in fixed else INF) for f in sigma}
+    if any(hi_cur[f] + EPS < lo_cur[f] for f in sigma):
         return None
 
-    # 迭代：反向传播上界链 -> 从后向前最晚落位 -> 收紧，直到不动。
     max_rounds = nf * (len(prep.oven_windows) + 1) + 2
     for _ in range(max_rounds):
-        # 烘台上界链反向传播。
+        # 烘台固定序链式约束 fs_{k+1} >= fs_k + fd_k，双向传播界。
         for _ in range(nf + 1):
             changed = False
-            for k in range(nf - 2, -1, -1):
-                a, b = sigma[k], sigma[k + 1]
-                cand = hi[b] - layers[a].flash_duration
-                if cand + EPS < hi[a]:
-                    hi[a] = cand
+            for k in range(1, nf):  # 前向抬高下界
+                a, b = sigma[k - 1], sigma[k]
+                cand = lo_cur[a] + fd[a]
+                if cand > lo_cur[b] + EPS and b not in fixed:
+                    lo_cur[b] = cand
                     changed = True
-            if any(hi[fi] + EPS < lo[fi] for fi in sigma):
+            for k in range(nf - 2, -1, -1):  # 反向压低上界
+                a, b = sigma[k], sigma[k + 1]
+                cand = hi_cur[b] - fd[a]
+                if cand + EPS < hi_cur[a] and a not in fixed:
+                    hi_cur[a] = cand
+                    changed = True
+            if any(hi_cur[f] + EPS < lo_cur[f] for f in sigma):
                 return None
             if not changed:
                 break
 
-        # 从后向前在 hi 内取最晚落位点。
+        # 固定点必须落在烘台时段内。
+        for f in fixed:
+            t = fixed[f]
+            if not any(t >= a - 1e-7 and t + fd[f] <= b + 1e-7 for a, b in prep.oven_windows):
+                return None
+
+        # 从后向前：未锁定者取 [lo, cap] 内最晚落位点。
         placed: dict[int, float] = {}
         progressed = False
         for k in range(nf - 1, -1, -1):
             f = sigma[k]
-            cap = hi[f]
-            if k + 1 < nf:
-                cap = min(cap, placed[sigma[k + 1]] - layers[f].flash_duration)
-            t = _latest_fit(
-                prep.oven_windows, prep.oven_starts, cap, lo[f], layers[f].flash_duration
-            )
-            if t is None:
-                return None
+            cap = hi_cur[f] if k + 1 == nf else min(hi_cur[f], placed[sigma[k + 1]] - fd[f])
+            if f in fixed:
+                t = fixed[f]
+                if t > cap + EPS or t + EPS < lo_cur[f]:
+                    return None
+            else:
+                t = _latest_fit(prep.oven_windows, prep.oven_starts, cap, lo_cur[f], fd[f])
+                if t is None:
+                    return None
+                if t + EPS < hi_cur[f]:
+                    hi_cur[f] = t
+                    progressed = True
             placed[f] = t
-            if t + EPS < hi[f]:
-                hi[f] = t
-                progressed = True
         if not progressed:
             fs = placed
             break
     else:
         return None
 
-    # 复核：紧接下界、落时段、烘台互斥（σ 顺序）。
+    # 复核：紧接下界、落时段、烘台互斥（sigma 顺序）、不超 makespan。
     for k, f in enumerate(sigma):
         if fs[f] + EPS < lo[f]:
             return None
-        if not any(
-            fs[f] >= a - 1e-7 and fs[f] + layers[f].flash_duration <= b + 1e-7
-            for a, b in prep.oven_windows
-        ):
-            return None
-        if fs[f] + layers[f].flash_duration > makespan_T + 1e-7:
+        if not any(fs[f] >= a - 1e-7 and fs[f] + fd[f] <= b + 1e-7 for a, b in prep.oven_windows):
             return None
         if k > 0:
             prev = sigma[k - 1]
-            if fs[f] + 1e-7 < fs[prev] + layers[prev].flash_duration:
+            if fs[f] + 1e-7 < fs[prev] + fd[prev]:
                 return None
 
     waitsum = 0.0
     if not relax_windows:
         for f, s in prep.window_pairs:
-            wait = earliest_d[PS(s)] - (fs[f] + layers[f].flash_duration)
+            wait = earliest_d[PS(s)] - (fs[f] + fd[f])
             if wait < layers[f].wait_min - 1e-7 or wait > layers[f].wait_max + 1e-7:
                 return None
             waitsum += wait
     return fs, waitsum
 
 
+def _snap_to_oven(prep, t, dur):
+    """对齐到 >= t 且能完整放下 dur 的最早烘台时段起点。"""
+    return _earliest_fit(prep.oven_windows, prep.oven_starts, t, dur)
+
+
+def _optimize_flashes(prep, sigma, pi, earliest_d, makespan_T, relax_windows):
+    """第二阶段：刮印固定为最早时刻，在不改变最小 makespan 的前提下：
+
+      1) 先把窗口等待总和压到最小 W*；
+      2) 再在所有达到 W* 的排法中，取"按刮印序列 pi 排列的闪干起点序列"
+         字典序最小者（闪干不无故拖晚；无窗口闪干自然尽早）。
+
+    返回 (fs, waitsum) 或 None。
+    """
+    layers = prep.layers
+    nf = len(sigma)
+    if nf == 0:
+        return {}, 0.0
+
+    lo, hi = _flash_bounds(prep, sigma, earliest_d, makespan_T, relax_windows)
+    if any(hi[f] + EPS < lo[f] for f in sigma):
+        return None
+    fd = {f: layers[f].flash_duration for f in sigma}
+
+    # 第一步：全部尽量晚，得到可达到的最小等待和 W* 与各闪干最晚值。
+    latest = _flash_latest_feasible(prep, sigma, lo, hi, {}, relax_windows, earliest_d)
+    if latest is None:
+        return None
+    fs_latest, w_star = latest
+    if relax_windows:
+        return fs_latest, w_star  # 诊断放开窗口时无需字典序细化。
+
+    # 第二步：按刮印序列 pi 中出现的先后，逐闪干锁定到不牺牲 W* 的最小起点。
+    # 可行起点是离散的：烘台时段端点、"不早于刮印结束"的下界、以及复涂窗口
+    # 派生的拐点。把这些事件点作为候选，二分找能在固定后仍达到 W* 的最小者。
+    PS = lambda i: 2 * i
+    flash_in_pi = [i for i in pi if i in set(sigma)]
+    fixed: dict[int, float] = {}
+
+    def keeps(f: int, t: float):
+        """固定 fs_f=t 后，等待和能否仍达到最小 W* 且固定点被尊重。
+
+        W* 是最小等待和；oracle 给出固定后能达到的最小等待，必须不大于 W*。
+        """
+        if t + EPS < lo[f] or t > hi[f] + EPS:
+            return False
+        trial = dict(fixed)
+        trial[f] = t
+        res = _flash_latest_feasible(
+            prep, sigma, lo, hi, trial, relax_windows, earliest_d
+        )
+        return (
+            res is not None
+            and abs(res[0][f] - t) <= 1e-7
+            and res[1] <= w_star + 1e-7
+        )
+
+    # 全局事件点：所有操作时长组合出的潜在拐点。
+    durations = {0.0}
+    for l in layers:
+        durations.add(l.duration)
+        if l.flash:
+            durations.add(l.flash_duration)
+    events: set[float] = {0.0}
+    for a, b in prep.oven_windows:
+        events.add(a)
+        events.add(b)
+    for _ in range(5):
+        grown = set(events)
+        for t in events:
+            for dd in durations:
+                grown.add(round(t + dd, 9))
+                grown.add(round(t - dd, 9))
+        if grown <= events:
+            break
+        events |= grown
+
+    for f in flash_in_pi:
+        # 该闪干相关的窗口拐点：后继起点 - fd - wait（wait 取上下限）。
+        extra = {lo[f], hi[f], fs_latest[f]}
+        lf = layers[f]
+        if lf.window_successor is not None:
+            ps_s = earliest_d[PS(prep.index[lf.window_successor])]
+            extra.add(ps_s - fd[f] - lf.wait_min)
+            extra.add(ps_s - fd[f] - lf.wait_max)
+        cands = sorted(
+            t
+            for t in (events | extra)
+            if lo[f] - 1e-7 <= t <= fs_latest[f] + 1e-7
+        )
+        chosen = None
+        left, right = 0, len(cands) - 1
+        while left <= right:
+            m = (left + right) // 2
+            if keeps(f, cands[m]):
+                chosen, right = cands[m], m - 1
+            else:
+                left = m + 1
+        fixed[f] = chosen if chosen is not None else fs_latest[f]
+
+    final = _flash_latest_feasible(
+        prep, sigma, lo, hi, fixed, relax_windows, earliest_d
+    )
+    if final is None or final[1] < w_star - 1e-7:
+        return None
+    fs, waitsum = final
+    return fs, waitsum
 def _normalize_fixes(prep: _Prepared, fixes: list[Fix]):
     out: dict[int, int] = {}
     used_pos: set[int] = set()

@@ -33,6 +33,8 @@ export default function App() {
     setFiles({});
     setFixes([]);
     setSnapshot(null);
+    // 关键：切换输入必须清空上一次排程结果，否则旧时序与新图层不匹配会崩溃。
+    setResult(null);
   }
 
   useEffect(() => {
@@ -94,8 +96,19 @@ export default function App() {
   async function adoptSolution() {
     if (!input || !result || !isSolution(result)) return;
     setBusy(true);
+    setLocalError(null);
     try {
-      const snap = await adopt(input, fixes);
+      const resp = await adopt(input, fixes);
+      // 后端在非法/无解时返回冲突结构（HTTP 409），不冻结。
+      if ("feasible" in resp && resp.feasible === false) {
+        setResult(resp);
+        return;
+      }
+      const snap = resp as AdoptSnapshot;
+      if (snap.version !== 1 || !snap.solution) {
+        setLocalError("采纳失败：返回的快照结构不完整");
+        return;
+      }
       setSnapshot(snap);
       // 冻结输入：以快照中的请求为准。
       setInput(structuredClone(snap.request.input));
@@ -295,6 +308,7 @@ export default function App() {
               <tbody>
                 {input.layers.map((l) => {
                   const t = solution.timings[String(l.id)];
+                  if (!t) return null;
                   return (
                     <tr key={l.id}>
                       <td>#{l.id}</td>

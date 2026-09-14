@@ -1,0 +1,11 @@
+# 一次性校验镜像：含完整源码与 node 工具链，供 compose verify 服务运行
+# tsc 类型检查、vitest 单测与 vite 生产构建。运行时由 compose 命令触发。
+FROM node:20-alpine
+
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install --no-audit --no-fund
+COPY . .
+
+# 默认直接跑全部前端校验；verify 主服务通过 depends_on 等待其成功。
+CMD ["sh", "-lc", "npm run test && npm run build && echo web-verify-ok"]

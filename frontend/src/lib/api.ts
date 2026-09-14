@@ -1,5 +1,6 @@
 import type {
   AdoptSnapshot,
+  ErrorResponse,
   FixPosition,
   ScheduleInput,
   ScheduleResult,
@@ -62,12 +63,16 @@ export async function uploadFiles(
 export async function adopt(
   input: ScheduleInput,
   fixPositions: FixPosition[],
-): Promise<AdoptSnapshot> {
+): Promise<AdoptSnapshot | ErrorResponse> {
   const res = await fetch("/api/adopt", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ input, fix_positions: fixPositions }),
   });
+  if (res.status === 409) {
+    // 输入非法或无解：后端返回与排程一致的冲突结构，不冻结。
+    return (await res.json()) as ErrorResponse;
+  }
   if (!res.ok) throw await parseError(res);
   return res.json();
 }

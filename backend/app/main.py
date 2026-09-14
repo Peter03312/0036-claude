@@ -25,6 +25,7 @@ from .models import (
     ErrorResponse,
     FixPosition,
     ScheduleRequest,
+    ScheduleSolution,
 )
 from .parser import InputError, parse_layers_json, parse_windows_csv, static_validate
 from .scheduler import Fix, search
@@ -175,17 +176,28 @@ async def parse_endpoint(
 
 @app.post("/api/adopt")
 def adopt(req: ScheduleRequest):
-    """采纳：对请求重新求解并冻结为可重开的快照。"""
-    sol = search(req.input, [Fix(f.layer_id, f.position) for f in req.fix_positions])
-    if sol is None:
-        raise HTTPException(status_code=409, detail={"message": "当前输入无可采纳的可行解"})
-    snapshot = AdoptSnapshot(
-        version=1,
-        request=req,
-        solution=sol,
-        adopted_at=datetime.now(timezone.utc).isoformat(),
-    )
-    return snapshot.model_dump()
+    """采纳：只有存在可行解时才冻结为可重开的工艺单。
+
+    与 /api/schedule 走同一套静态校验、完整搜索与无解诊断；若输入非法或无解，
+    返回与排程一致的冲突结构（feasible=false），HTTP 409，绝不冻结。
+    """
+    result = _run(req.input, req.fix_positions)
+    # _run 对有解/无解均返回 JSONResponse。
+    if isinstance(result, JSONResponse) and result.status_code == 200:
+        body = json.loads(result.body)
+        if body.get("feasible") is True:
+            snapshot = AdoptSnapshot(
+                version=1,
+                request=req,
+                solution=ScheduleSolution.model_validate(body),
+                adopted_at=datetime.now(timezone.utc).isoformat(),
+            )
+            return snapshot.model_dump()
+    # 无解或非法：透传冲突（状态码置 409）。
+    if isinstance(result, JSONResponse):
+        result.status_code = 409
+        return result
+    return result
 
 
 @app.exception_handler(InputError)

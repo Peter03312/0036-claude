@@ -18,7 +18,9 @@
 - 闪干开始**不得早于**该层刮印结束：`fs_i ≥ ps_i + duration_i`；闪干在唯一烘台上
   可延后安排（与印台刮印并行）。
 - **复涂窗口**：窗口后继刮印必须始于闪干结束后的闭区间
-  `fe_f + wait_min ≤ ps_s ≤ fe_f + wait_max`。
+  `fe_f + wait_min ≤ ps_s ≤ fe_f + wait_max`。**同一个后继可以同时是多个闪干层
+  的窗口后继**：其后继起点必须落入各窗口的交集；交集（连同设备时段、互斥）非空
+  即排程，交集为空则在运行期报 `WINDOW_INFEASIBLE` 并指出相关图层。
 - **设备区间左闭右开** `[start, end)`；每个操作 `[t, t+duration)` 必须完整落在
   某一个可用时段内。
 - **单印台、单烘台各自互斥**（任意两块刮印 / 任意两段闪干不得重叠）。
@@ -66,7 +68,6 @@
 | `WINDOW_ON_NON_FLASH` | 非闪干层设置窗口后继 |
 | `BAD_WINDOW_BOUNDS` | 等待下限大于上限 |
 | `WET_GROUP_NOT_CHAIN` / `WET_GROUP_SINGLE` | 湿碰湿组不构成链 |
-| `MULTIPLE_WINDOW_PREDECESSORS` | 一个后继被多个窗口约束 |
 | `PRESS_WINDOW_TOO_SHORT` / `OVEN_WINDOW_TOO_SHORT` | 单个时段容不下操作 |
 | `WET_GROUP_SPLIT` | 时段间隙切断湿碰湿连续组 |
 | `WINDOW_INFEASIBLE` | 复涂窗口本身杀死所有排法（放开设备时段仍无解） |
@@ -188,31 +189,55 @@ start,end
 | POST | `/api/parse` | multipart 上传三个文件，返回规范化输入与静态冲突 |
 | POST | `/api/schedule` | JSON body `{input, fix_positions}`，返回解或冲突 |
 | POST | `/api/schedule/upload` | multipart 上传并直接编排 |
-| POST | `/api/adopt` | 重算并冻结为工艺单快照（含 `version/adopted_at/request/solution`） |
+| POST | `/api/adopt` | 仅当存在可行解才冻结为工艺单快照；非法/无解返回 **409** 与冲突结构，绝不冻结 |
 
 `fix_positions` 形如 `[{"layer_id": 3, "position": 2}]`，位置从 **1** 起。
 快照 JSON 可下载保存，之后在界面"重开工艺单快照"原样载入。
 
 ---
 
-## 8. 验收（一键 verify）
+## 8. 验收（verify）
+
+### 8.1 本机一键脚本
 
 `verify.sh` 一次性完成：后端 pytest、前端 vitest 与 **TypeScript/生产构建**、
-真实启动 uvicorn + 静态服务器后的**端到端 HTTP 冒烟**，覆盖题目要求的五类场景：
+真实启动 uvicorn + 静态服务器后的**端到端 HTTP 冒烟**：
 
 ```bash
 ./verify.sh                                 # 默认 API 18000 / Web 18080
 API_PORT=19000 WEB_PORT=19080 ./verify.sh
 ```
 
-验收场景：
+### 8.2 按交付约定运行 Compose 的 verify 服务
+
+`docker-compose.verify.yml` 定义了一次性 `verify` 服务：它构建 API 与前端校验
+镜像，在容器内跑后端 pytest、前端 tsc/vitest/vite 构建，并启动 API 执行
+`verify/verify_e2e.py` 端到端冒烟，全部通过退出码 0：
+
+```bash
+docker compose -f docker-compose.verify.yml up \
+  --build --abort-on-container-exit verify
+docker compose -f docker-compose.verify.yml down --rmi local
+```
+
+单端校验：
+
+```bash
+docker compose -f docker-compose.verify.yml run --rm verify-web   # 前端 tsc/vitest/build
+```
+
+### 8.3 验收场景
 
 1. **贪心错失窗口但换序可行**：编号序（用固定位置强制）无解，搜索得 `[2,1,3]`，
    图层 1 落入第二时段、后继等待 0 ∈ [0,1]、余量 1；
-2. **两设备合法并行**：闪干 1 `[4,10)` 与刮印 2 `[4,9)` 在印台/烘台上重叠；
+2. **两设备合法并行**：闪干与刮印 2 在印台/烘台上时间重叠；
 3. **时段间隙切断湿碰湿组**：返回 `WET_GROUP_SPLIT` 与图层 `[1,2,3]`；
-4. **真正无解**：窗口与前驱构成正环，返回 `WINDOW_INFEASIBLE`；
-5. **采纳快照**：`/api/adopt` 冻结，快照 request 重算结果一致，可导出重开。
+4. **真正无解**：零等待窗口与两台时段错配，返回冲突类型与图层；
+5. **采纳快照**：`/api/adopt` 仅在有可行解时冻结，快照 request 重算一致；
+6. **多窗口后继**：同一后继受两个合法窗口约束、交集非空时正常排程；交集为空报
+   `WINDOW_INFEASIBLE`；
+7. **采纳拦截**：非法工艺输入（如非闪干层设窗口后继）调 `/api/adopt` 返回
+   **409 + 冲突类型**，不会被冻结。
 
 单独跑测试：
 

@@ -181,18 +181,8 @@ def static_validate(inp: ScheduleInput) -> StaticReport:
             cycle,
         )
 
-    # 窗口后继唯一性：同一图层不得被两个窗口指向（否则两个闭区间要同时约束一个起点）
-    targeted: dict[int, list[int]] = {}
-    for l in inp.layers:
-        if l.window_successor is not None and l.window_successor in ids:
-            targeted.setdefault(l.window_successor, []).append(l.id)
-    for succ, preds in targeted.items():
-        if len(preds) > 1:
-            add(
-                "MULTIPLE_WINDOW_PREDECESSORS",
-                f"图层 {succ} 同时是 {preds} 的窗口后继，起点无法同时落入多个窗口",
-                preds + [succ],
-            )
+    # 一个图层可以同时是多个闪干层的窗口后继：其后继起点必须同时落入各窗口
+    # 闭区间，交集是否非空（连同设备时段、互斥等）由完整搜索在运行期判定。
 
     # 湿碰湿组：同组层必须以组内前驱串成链（允许首节点无前驱）。
     groups: dict[str, list[Layer]] = {}
