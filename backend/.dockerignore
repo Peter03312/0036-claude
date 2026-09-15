@@ -1,6 +1,10 @@
-# 构建上下文不需要的文件
+# 构建上下文忽略规则。
+# 注意：不要忽略 tests/ —— Dockerfile.verify（compose 一键验收）需要
+# COPY tests ./tests。测试文件很小，运行镜像一并包含亦无副作用。
 __pycache__/
 *.pyc
+*.pyo
 .pytest_cache/
 .venv/
-tests/
+.verify-venv/
+*.egg-info/

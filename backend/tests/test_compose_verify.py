@@ -48,3 +48,34 @@ def test_verify_images_have_dockerfiles():
         df = build.get("dockerfile", "Dockerfile")
         context = os.path.join(ROOT, build["context"])
         assert os.path.isfile(os.path.join(context, df)), (svc, df)
+
+
+def test_backend_dockerignore_keeps_tests_for_verify_image():
+    """Dockerfile.verify 要 COPY tests，.dockerignore 不得把 tests/ 排除。"""
+    ignore_path = os.path.join(ROOT, "backend", ".dockerignore")
+    with open(ignore_path, encoding="utf-8") as f:
+        rules = [
+            line.strip()
+            for line in f
+            if line.strip() and not line.strip().startswith("#")
+        ]
+    # 任何会忽略 tests 目录的规则都不允许出现。
+    blocks_tests = [
+        r for r in rules
+        if r.rstrip("/") == "tests"
+        or r in ("tests", "tests/")
+        or r.startswith("tests/")
+        or r in ("*", "**")
+    ]
+    assert not blocks_tests, f".dockerignore 排除了 tests：{blocks_tests}"
+    # tests 源文件确实存在，COPY 才不会失败。
+    assert os.path.isfile(
+        os.path.join(ROOT, "backend", "tests", "test_api.py")
+    )
+
+
+def test_backend_verify_dockerfile_copies_tests():
+    path = os.path.join(ROOT, "backend", "Dockerfile.verify")
+    content = open(path, encoding="utf-8").read()
+    assert "COPY tests" in content
+    assert "pytest" in content
