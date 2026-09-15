@@ -79,3 +79,46 @@ def test_backend_verify_dockerfile_copies_tests():
     content = open(path, encoding="utf-8").read()
     assert "COPY tests" in content
     assert "pytest" in content
+
+
+def test_verify_mounts_repo_root():
+    """后端测试/端到端脚本需要仓库根文件（docker-compose.yml、verify/）。
+
+    verify 服务必须把仓库根挂到容器内（只读），并在 backend 目录跑测试，
+    而不是只依赖以 ./backend 为上下文的镜像内容。
+    """
+    verify = _compose()["services"]["verify"]
+    # 卷可能是短格式字符串 "./:/workspace:ro" 或长格式映射。
+    raw = verify.get("volumes", [])
+    mounts = {}
+    for item in raw:
+        if isinstance(item, str):
+            src, rest = item.split(":", 1)
+            parts = rest.split(":")
+            mounts[src.rstrip("/") or "."] = {
+                "target": parts[0],
+                "ro": len(parts) > 1 and "ro" in parts[1].split(","),
+            }
+        else:
+            mounts[item["source"].rstrip("/") or "."] = {
+                "target": item.get("target"),
+                "ro": item.get("read_only", False),
+            }
+    assert "." in mounts, f"必须挂载仓库根，实际挂载：{list(mounts)}"
+    assert mounts["."]["target"] == "/workspace"
+    assert mounts["."]["ro"] is True
+
+    command = " ".join(verify["command"])
+    assert "cd /workspace/backend" in command
+    assert "/workspace/verify/verify_e2e.py" in command
+    # 只读挂载下不写缓存。
+    assert "no:cacheprovider" in command
+    env = verify.get("environment", [])
+    assert any("PYTHONDONTWRITEBYTECODE=1" in str(e) for e in env)
+
+
+def test_verify_repo_root_files_exist():
+    """挂载后容器内 /workspace 下应能找到的根文件（防止路径漂移）。"""
+    assert os.path.isfile(os.path.join(ROOT, "docker-compose.yml"))
+    assert os.path.isfile(os.path.join(ROOT, "verify", "verify_e2e.py"))
+    assert os.path.isfile(os.path.join(ROOT, "backend", "tests", "test_api.py"))

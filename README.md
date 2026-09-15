@@ -236,8 +236,11 @@ docker compose --profile verify run --rm api-verify-base   # 后端 pytest
 ```
 
 > 说明：`web-verify` 用 `frontend/Dockerfile.verify`（Node + 完整源码）；`verify`
-> 用 `backend/Dockerfile.verify`（已预装 pytest/httpx 并内置 tests，无需运行时联网
-> 装包），健康等待与冒烟全部用 Python 标准库 urllib 完成，精简镜像中无需 curl。
+> 用 `backend/Dockerfile.verify`（已预装 pytest/httpx）提供运行环境，并把**仓库根
+> 以只读卷挂到容器 `/workspace`**——后端测试需要读取根级文件（`docker-compose.yml`、
+> `verify/verify_e2e.py`）。挂载只读，容器内以 `PYTHONDONTWRITEBYTECODE=1` 与
+> `pytest -p no:cacheprovider` 避免写缓存；健康等待与冒烟全部用 Python 标准库
+> urllib 完成，精简镜像中无需 curl。
 
 ### 8.3 验收场景
 

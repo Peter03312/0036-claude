@@ -52,21 +52,29 @@ services:
     command: ["sh", "-lc", "npm run test && npm run build && echo web-verify-ok"]
 
   # 主验收：后端 pytest + 起 API + 端到端 HTTP 冒烟。
+  # 镜像只提供依赖；仓库根以只读卷挂到 /workspace，使后端测试能读取
+  # 仓库根文件（docker-compose.yml、verify/verify_e2e.py），避免以
+  # ./backend 为构建上下文导致根文件缺失。
   verify:
     image: trapping-api:verify
     profiles: [verify]
-    working_dir: /app
+    working_dir: /workspace/backend
     depends_on:
       api-verify-base:
         condition: service_completed_successfully
       web-verify:
         condition: service_completed_successfully
+    environment:
+      # 后端测试从 backend/ 运行，仓库根即其父目录。
+      - PYTHONPATH=/workspace/backend
+      # 仓库根以只读方式挂载：不写字节码与 pytest 缓存。
+      - PYTHONDONTWRITEBYTECODE=1
     entrypoint: ["sh", "-lc"]
     command:
       - |
         set -e
         echo "==> [1/3] 后端单元与接口测试"
-        cd /app && python -m pytest -q
+        cd /workspace/backend && python -m pytest -q -p no:cacheprovider
 
         echo "==> [2/3] 启动后端服务（容器内）"
         uvicorn app.main:app --host 127.0.0.1 --port 8000 &
@@ -83,8 +91,9 @@ services:
         PYWAIT
 
         echo "==> [3/3] 端到端接口冒烟"
+        test -f /workspace/verify/verify_e2e.py
         python /workspace/verify/verify_e2e.py
         kill $$API_PID 2>/dev/null || true
         echo "✅ compose verify 全部通过"
     volumes:
-      - ./verify:/workspace/verify:ro
+      - ./:/workspace:ro
