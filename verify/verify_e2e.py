@@ -160,7 +160,18 @@ def main() -> None:
               and body["conflicts"][0]["type"] == "WINDOW_ON_NON_FLASH",
               "非法工艺输入采纳被拒（409 + 冲突类型）")
 
-    print("\n✅ compose verify：五类验收 + 多窗口 + 采纳拦截全部通过")
+    # 6) 空图层作业：返回明确的 EMPTY_LAYERS 冲突，而不是服务端错误。
+    empty = {"input": {
+        "layers": [],
+        "press_windows": [{"start": 0, "end": 10}],
+        "oven_windows": [{"start": 0, "end": 10}],
+    }, "fix_positions": []}
+    ec = post("/api/schedule", empty)
+    check(ec["feasible"] is False
+          and ec["conflicts"][0]["type"] == "EMPTY_LAYERS",
+          "空图层作业返回 EMPTY_LAYERS 而非 500")
+
+    print("\n✅ compose verify：五类验收 + 多窗口 + 采纳拦截 + 空作业全部通过")
 
 
 if __name__ == "__main__":

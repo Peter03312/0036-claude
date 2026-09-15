@@ -133,6 +133,11 @@ def static_validate(inp: ScheduleInput) -> StaticReport:
     def add(ctype: str, message: str, layers: list[int]) -> None:
         conflicts.append(Conflict(type=ctype, message=message, layers=layers))
 
+    # 空作业：没有任何图层无法排程。
+    if not inp.layers:
+        add("EMPTY_LAYERS", "图层列表为空：请至少上传一个图层后再排程。", [])
+        return StaticReport(conflicts=conflicts)
+
     # 引用完整性
     for l in inp.layers:
         for p in l.predecessors:

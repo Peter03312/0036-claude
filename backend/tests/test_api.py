@@ -276,3 +276,44 @@ def test_static_validation_cycle(client):
     data = client.post("/api/schedule", json={"input": payload}).json()
     assert data["feasible"] is False
     assert data["conflicts"][0]["type"] == "DEPENDENCY_CYCLE"
+
+
+def test_empty_layers_reports_conflict_not_500(client):
+    """提交空图层作业应明确告知图层列表为空，而不是服务端错误。"""
+    payload = {
+        "layers": [],
+        "press_windows": [{"start": 0, "end": 10}],
+        "oven_windows": [{"start": 0, "end": 10}],
+    }
+    r = client.post("/api/schedule", json={"input": payload})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["feasible"] is False
+    assert data["conflicts"][0]["type"] == "EMPTY_LAYERS"
+    assert "空" in data["conflicts"][0]["message"]
+
+
+def test_empty_layers_adopt_rejected(client):
+    payload = {
+        "layers": [],
+        "press_windows": [{"start": 0, "end": 10}],
+        "oven_windows": [{"start": 0, "end": 10}],
+    }
+    r = client.post("/api/adopt", json={"input": payload, "fix_positions": []})
+    assert r.status_code == 409
+    assert r.json()["conflicts"][0]["type"] == "EMPTY_LAYERS"
+
+
+def test_empty_layers_parse_upload_is_located(client):
+    r = client.post(
+        "/api/parse",
+        files={
+            "layers": ("layers.json", b"[]", "application/json"),
+            "press": ("p.csv", b"start,end\n0,10\n", "text/csv"),
+            "oven": ("o.csv", b"start,end\n0,10\n", "text/csv"),
+        },
+    )
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert detail["location"] == "layers.json"
+    assert "空" in detail["message"]

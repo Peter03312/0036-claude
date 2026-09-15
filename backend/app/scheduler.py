@@ -631,6 +631,8 @@ def search(
     relax_wet: bool = False,
 ) -> ScheduleSolution | None:
     """完整搜索；无解返回 None。"""
+    if not inp.layers:
+        return None  # 空作业（静态校验会报 EMPTY_LAYERS）。
     prep = _prepare(inp)
     fix_map = _normalize_fixes(prep, fixes)
     if fix_map is None:

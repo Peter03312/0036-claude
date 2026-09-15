@@ -202,6 +202,16 @@ except urllib.error.HTTPError as e:
     assert e.code == 409 and body["feasible"] is False, body
     assert body["conflicts"][0]["type"] == "WINDOW_ON_NON_FLASH", body
     print("    非法工艺输入采纳被拒 OK（409 +", body["conflicts"][0]["type"], "）")
+
+# 空图层作业：明确报 EMPTY_LAYERS，而不是服务端错误
+empty_resp = post("/api/schedule", {"input": {
+    "layers": [],
+    "press_windows": [{"start": 0, "end": 10}],
+    "oven_windows": [{"start": 0, "end": 10}],
+}, "fix_positions": []})
+assert empty_resp["feasible"] is False, empty_resp
+assert empty_resp["conflicts"][0]["type"] == "EMPTY_LAYERS", empty_resp
+print("    空图层作业返回 EMPTY_LAYERS OK")
 PY
 
 echo ""
